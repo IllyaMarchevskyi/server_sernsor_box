@@ -29,6 +29,7 @@ def ingest():
         return auth_err
 
     data = get_payload()
+    print(f"Data: {data}")
     station = extract_station(data)
     if not station:
         return jsonify({"error": "missing_station_code"}), 400

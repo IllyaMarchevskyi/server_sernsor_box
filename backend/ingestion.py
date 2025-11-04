@@ -23,8 +23,9 @@ def health() -> Dict[str, str]:
 
 
 @bp.post("/ingest")
-def ingest():
-    auth_err = require_api_key()
+@bp.post("/ingest/<string:path_token>")
+def ingest(path_token: Optional[str] = None):
+    auth_err = require_api_key(path_token)
     if auth_err:
         return auth_err
 
@@ -80,4 +81,3 @@ def _insert_meteo(
     payload = {k: v for k, v in fields.items() if v is not None}
     rec = MeteoReading(station_code=station, city=city, **payload)
     session.add(rec)
-

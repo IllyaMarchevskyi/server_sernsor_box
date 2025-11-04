@@ -1,17 +1,56 @@
 from typing import Any, Dict, Optional, Tuple
 
-from flask import request
+from flask import current_app, jsonify, request
 
 from .config import Config
 from .constants import CITY_BY_ID
 
 
-def require_api_key() -> Optional[Tuple[Dict[str, str], int]]:
-    provided = request.headers.get("X-API-Key") or request.args.get("api_key")
+def require_api_key(path_token: Optional[str] = None) -> Optional[Tuple[Any, int]]:
+    provided = (
+        request.headers.get("X-API-Key")
+        or request.args.get("api_key")
+        or path_token
+    )
     if Config.API_KEY is None:
         return None
+
+    if not provided:
+        current_app.logger.warning(
+            "Unauthorized ingest request: missing API key",
+            extra={
+                "remote_addr": request.remote_addr,
+                "path": request.path,
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": "missing_api_key",
+                    "message": "Provide the API key via X-API-Key header, api_key query parameter, or /ingest/<api_key> URL.",
+                }
+            ),
+            401,
+        )
+
     if provided != Config.API_KEY:
-        return {"error": "unauthorized"}, 401
+        current_app.logger.warning(
+            "Unauthorized ingest request: invalid API key",
+            extra={
+                "remote_addr": request.remote_addr,
+                "path": request.path,
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": "invalid_api_key",
+                    "message": "The supplied API key does not match the INGEST_API_KEY configured on the server.",
+                }
+            ),
+            401,
+        )
+
     return None
 
 

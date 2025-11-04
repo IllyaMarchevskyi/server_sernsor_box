@@ -20,3 +20,6 @@ CITY_BY_ID: Dict[int, str] = {
     16: "Bila_Tserkva",
 }
 
+
+CITY_BY_CODE: Dict[str, str] = {
+}

@@ -1,9 +1,15 @@
 from typing import Any, Dict, Optional, Tuple
 
 from flask import current_app, jsonify, request
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .config import Config
-from .constants import CITY_BY_ID
+from .constants import CITY_BY_CODE, CITY_BY_ID
+from .models import StationMapping
+
+
+CITY_NAME_LOOKUP = {name.lower(): name for name in CITY_BY_ID.values()}
 
 
 def require_api_key(path_token: Optional[str] = None) -> Optional[Tuple[Any, int]]:
@@ -85,6 +91,15 @@ def extract_station(data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def normalize_station_code(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text.upper()
+
+
 def _to_city_id(value: Any) -> Optional[int]:
     try:
         return int(str(value).strip())
@@ -92,22 +107,61 @@ def _to_city_id(value: Any) -> Optional[int]:
         return None
 
 
-def resolve_city(data: Dict[str, Any], station: Optional[str]) -> Optional[str]:
+def _city_from_name(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return CITY_NAME_LOOKUP.get(text.lower())
+
+
+def extract_city_from_payload(data: Dict[str, Any]) -> Optional[str]:
     for key in ["city", "city_name"]:
-        raw = data.get(key)
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
+        city = _city_from_name(data.get(key))
+        if city:
+            return city
 
-    for key in ["city_id", "station_id", "station_code", "station", "id"]:
-        if key in data:
-            city_id = _to_city_id(data.get(key))
-            if city_id and city_id in CITY_BY_ID:
-                return CITY_BY_ID[city_id]
-
-    if station:
-        city_id = _to_city_id(station)
+    for key in ["city_id", "station_id"]:
+        city_id = _to_city_id(data.get(key))
         if city_id and city_id in CITY_BY_ID:
             return CITY_BY_ID[city_id]
+
+    return None
+
+
+def _lookup_city_by_station(session: Session, station_code: Optional[str]) -> Optional[str]:
+    code = normalize_station_code(station_code)
+    if not code:
+        return None
+
+    db_city = session.execute(
+        select(StationMapping.city).where(StationMapping.station_code == code)
+    ).scalar_one_or_none()
+    if db_city:
+        return db_city
+
+    return CITY_BY_CODE.get(code)
+
+
+def resolve_city(session: Session, data: Dict[str, Any], station: Optional[str]) -> Optional[str]:
+    city = extract_city_from_payload(data)
+    if city:
+        return city
+
+    for key in ["station_code", "station", "id"]:
+        code_city = _lookup_city_by_station(session, data.get(key))
+        if code_city:
+            return code_city
+
+    if station:
+        city_from_station = _lookup_city_by_station(session, station)
+        if city_from_station:
+            return city_from_station
+
+        numeric_station = _to_city_id(station)
+        if numeric_station and numeric_station in CITY_BY_ID:
+            return CITY_BY_ID[numeric_station]
 
     return None
 

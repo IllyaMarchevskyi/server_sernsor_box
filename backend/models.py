@@ -61,3 +61,17 @@ class MeteoReading(Base):
         Index("ix_meteo_city", "city"),
     )
 
+
+class StationMapping(Base):
+    __tablename__ = "station_mappings"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    station_code = Column(String(64), nullable=False, unique=True)
+    city = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=_kyiv_now)
+    updated_at = Column(DateTime, nullable=False, default=_kyiv_now, onupdate=_kyiv_now)
+
+    __table_args__ = (
+        Index("ix_station_mapping_code", "station_code"),
+        Index("ix_station_mapping_city", "city"),
+    )

@@ -1,17 +1,21 @@
 from typing import Dict, Optional
 
 from flask import Blueprint, jsonify
+from sqlalchemy import select
 
+from .constants import CITY_BY_ID
 from .db import SessionLocal
 from .helpers import (
     collect_gas_fields,
     collect_meteo_fields,
+    extract_city_from_payload,
     extract_station,
     get_payload,
+    normalize_station_code,
     require_api_key,
     resolve_city,
 )
-from .models import GasReading, MeteoReading
+from .models import GasReading, MeteoReading, StationMapping
 
 
 bp = Blueprint("ingest", __name__)
@@ -34,7 +38,6 @@ def ingest(path_token: Optional[str] = None):
     station = extract_station(data)
     if not station:
         return jsonify({"error": "missing_station_code"}), 400
-    city = resolve_city(data, station)
 
     gas_fields = collect_gas_fields(data)
     meteo_fields = collect_meteo_fields(data)
@@ -45,6 +48,8 @@ def ingest(path_token: Optional[str] = None):
         return jsonify({"error": "no_metrics"}), 400
 
     with SessionLocal() as session:
+        city = resolve_city(session, data, station)
+
         gas_inserted = 0
         meteo_inserted = 0
 
@@ -65,6 +70,136 @@ def ingest(path_token: Optional[str] = None):
             "meteo_upserted": meteo_inserted,
         }
     )
+
+
+@bp.post("/station-mappings")
+@bp.post("/ingest/<string:path_token>/station-mappings")
+def upsert_station_mapping(path_token: Optional[str] = None):
+    auth_err = require_api_key(path_token)
+    if auth_err:
+        return auth_err
+
+    data = get_payload()
+
+    new_code = normalize_station_code(
+        data.get("station_code") or data.get("code")
+    )
+    if not new_code:
+        return (
+            jsonify(
+                {
+                    "error": "missing_station_code",
+                    "message": "Provide station_code (MAC) in the request payload.",
+                }
+            ),
+            400,
+        )
+
+    city = extract_city_from_payload(data)
+    city_was_provided = any(
+        key in data for key in ("city", "city_name", "city_id")
+    )
+    if city is None and city_was_provided:
+        return (
+            jsonify(
+                {
+                    "error": "invalid_city",
+                    "message": "Provided city value is not present in CITY_BY_ID.",
+                }
+            ),
+            400,
+        )
+
+    previous_code = normalize_station_code(data.get("previous_station_code"))
+
+    with SessionLocal() as session:
+        operation = "created"
+
+        if previous_code and previous_code != new_code:
+            existing = session.execute(
+                select(StationMapping).where(StationMapping.station_code == previous_code)
+            ).scalar_one_or_none()
+
+            if existing is None:
+                return (
+                    jsonify(
+                        {
+                            "error": "station_not_found",
+                            "message": f"No station mapping found for {previous_code}.",
+                        }
+                    ),
+                    404,
+                )
+
+            duplicate = session.execute(
+                select(StationMapping).where(StationMapping.station_code == new_code)
+            ).scalar_one_or_none()
+            if duplicate and duplicate.id != existing.id:
+                return (
+                    jsonify(
+                        {
+                            "error": "duplicate_station_code",
+                            "message": f"Station mapping for {new_code} already exists.",
+                        }
+                    ),
+                    409,
+                )
+
+            if city is None:
+                city = existing.city
+
+            existing.station_code = new_code
+            existing.city = city
+            operation = "renamed"
+        else:
+            existing = session.execute(
+                select(StationMapping).where(StationMapping.station_code == new_code)
+            ).scalar_one_or_none()
+
+            if existing:
+                if city is None:
+                    city = existing.city
+                existing.city = city
+                operation = "updated"
+            else:
+                if city is None:
+                    return (
+                        jsonify(
+                            {
+                                "error": "missing_city",
+                                "message": "Provide city/city_name or city_id when creating a new mapping.",
+                            }
+                        ),
+                        400,
+                    )
+                mapping = StationMapping(station_code=new_code, city=city)
+                session.add(mapping)
+                operation = "created"
+
+        session.commit()
+
+    return jsonify(
+        {
+            "status": "ok",
+            "station_code": new_code,
+            "city": city,
+            "operation": operation,
+        }
+    )
+
+
+@bp.get("/cities")
+@bp.get("/ingest/<string:path_token>/cities")
+def list_cities(path_token: Optional[str] = None):
+    auth_err = require_api_key(path_token)
+    if auth_err:
+        return auth_err
+
+    cities = [
+        {"id": city_id, "name": name}
+        for city_id, name in sorted(CITY_BY_ID.items())
+    ]
+    return jsonify({"cities": cities})
 
 
 def _insert_gas(

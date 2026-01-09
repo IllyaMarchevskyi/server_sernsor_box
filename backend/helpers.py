@@ -169,22 +169,22 @@ def resolve_city(
 
 def collect_gas_fields(data: Dict[str, Any]) -> Dict[str, Optional[float]]:
     return {
-        "co_mg_m3": to_float(data.get("CO")),
-        "so2_mg_m3": to_float(data.get("SO2")),
-        "no2_mg_m3": to_float(data.get("NO2")),
-        "no_mg_m3": to_float(data.get("NO")),
-        "h2s_mg_m3": to_float(data.get("H2S")),
-        "o3_mg_m3": to_float(data.get("O3")),
-        "nh3_mg_m3": to_float(data.get("NH3")),
-        "pm2_5_mg_m3": to_float(data.get("PM2.5")),
-        "pm10_mg_m3": to_float(data.get("PM10")),
+        "CO_mg_m3": to_float(data.get("CO")),
+        "SO2_mg_m3": to_float(data.get("SO2")),
+        "NO2_mg_m3": to_float(data.get("NO2")),
+        "NO_mg_m3": to_float(data.get("NO")),
+        "H2S_mg_m3": to_float(data.get("H2S")),
+        "O3_mg_m3": to_float(data.get("O3")),
+        "NH3_mg_m3": to_float(data.get("NH3")),
+        "PM2_5_mg_m3": to_float(data.get("PM2.5")),
+        "PM10_mg_m3": to_float(data.get("PM10")),
     }
 
 
 def collect_meteo_fields(data: Dict[str, Any]) -> Dict[str, Optional[float]]:
     return {
-        "wd_deg": to_float(data.get("WD") or data.get("wd_deg")),
-        "temp_c": to_float(data.get("TEMP")),
-        "rh_pct": to_float(data.get("RH")),
+        "P_hpa": to_float(data.get("WD") or data.get("wd_deg")),
+        "TEMP_c": to_float(data.get("TEMP")),
+        "RH_pct": to_float(data.get("RH")),
         "R_µsv": to_float(data.get("R")),
     }

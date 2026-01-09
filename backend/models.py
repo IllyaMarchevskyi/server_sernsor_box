@@ -20,15 +20,15 @@ class GasReading(Base):
     city = Column(String(64), nullable=True)
     time = Column(DateTime, nullable=False, default=_kyiv_now)
 
-    co_ppm = Column(Numeric(10, 4))
-    so2_ppb = Column(Numeric(10, 4))
-    no2_ppb = Column(Numeric(10, 4))
-    no_ppb = Column(Numeric(10, 4))
-    h2s_ppb = Column(Numeric(10, 4))
-    o3_ppb = Column(Numeric(10, 4))
-    nh3_ppb = Column(Numeric(10, 4))
-    pm2_5_ugm3 = Column(Numeric(10, 4))
-    pm10_ugm3 = Column(Numeric(10, 4))
+    co_mg_m3 = Column(Numeric(10, 4))
+    so2_mg_m3 = Column(Numeric(10, 4))
+    no2_mg_m3 = Column(Numeric(10, 4))
+    no_mg_m3 = Column(Numeric(10, 4))
+    h2s_mg_m3 = Column(Numeric(10, 4))
+    o3_mg_m3 = Column(Numeric(10, 4))
+    nh3_mg_m3 = Column(Numeric(10, 4))
+    pm2_5_mg_m3 = Column(Numeric(10, 4))
+    pm10_mg_m3 = Column(Numeric(10, 4))
 
     __table_args__ = (
         Index("ix_gas_station_time", "station_code", "time"),
@@ -38,7 +38,7 @@ class GasReading(Base):
 
 
 class MeteoReading(Base):
-    __tablename__ = "meteo_readings"
+    __tablename__ = "env_readings"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     station_code = Column(String(64), nullable=False)
@@ -48,12 +48,7 @@ class MeteoReading(Base):
     wd_deg = Column(Numeric(10, 4))
     temp_c = Column(Numeric(10, 4))
     rh_pct = Column(Numeric(10, 4))
-    ws_ms = Column(Numeric(10, 4))
-    gst_ms = Column(Numeric(10, 4))
-    rain_mm = Column(Numeric(10, 4))
-    uv_index = Column(Numeric(10, 4))
-    lux = Column(Numeric(12, 4))
-    pres_hpa = Column(Numeric(12, 4))
+    R_µsv = Column(Numeric(10, 4))
 
     __table_args__ = (
         Index("ix_meteo_station_time", "station_code", "time"),

@@ -1,9 +1,10 @@
 from typing import Dict, Optional
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from sqlalchemy import select
+from backend.log import log
 
-from .constants import CITY_BY_ID
+from .config import CITY_BY_ID
 from .db import SessionLocal
 from .helpers import (
     collect_gas_fields,
@@ -17,7 +18,6 @@ from .helpers import (
 )
 from .models import GasReading, MeteoReading, StationMapping
 
-
 bp = Blueprint("ingest", __name__)
 
 
@@ -25,43 +25,67 @@ bp = Blueprint("ingest", __name__)
 def health() -> Dict[str, str]:
     return {"status": "ok"}
 
-
 @bp.post("/ingest")
 @bp.post("/ingest/<string:path_token>")
 def ingest(path_token: Optional[str] = None):
+    log.info("Start ingest from %s", request.host)
     auth_err = require_api_key(path_token)
     if auth_err:
+        log.warning("Unauthorized ingest attempt from %s", request.host)
         return auth_err
 
     data = get_payload()
-    print(f"Data: {data}")
+    log.debug("Ingest payload: %s", data)
     station = extract_station(data)
     if not station:
+        log.info("Missing station code in ingest payload")
+        return jsonify({"error": "missing_station_code"}), 400
+
+    station = normalize_station_code(station)
+    if not station:
+        log.info("Station code normalized to empty")
         return jsonify({"error": "missing_station_code"}), 400
 
     gas_fields = collect_gas_fields(data)
-    meteo_fields = collect_meteo_fields(data)
-
     has_gas = any(v is not None for v in gas_fields.values())
-    has_meteo = any(v is not None for v in meteo_fields.values())
-    if not has_gas and not has_meteo:
-        return jsonify({"error": "no_metrics"}), 400
+
 
     with SessionLocal() as session:
+        mapping_exists = session.execute(
+            select(StationMapping.id).where(StationMapping.station_code == station)
+        ).scalar_one_or_none()
+        if mapping_exists is None:
+            session.rollback()
+            log.info("Station mapping not found for station=%s", station)
+            return (
+                jsonify(
+                    {
+                        "error": "station_not_registered",
+                        "message": "Station code is absent from station_mappings; payload was ignored.",
+                    }
+                ),
+                404,
+            )
+
         city = resolve_city(session, data, station)
 
         gas_inserted = 0
         meteo_inserted = 0
 
         if has_gas:
+            log.debug("Inserting gas readings for station=%s city=%s", station, city)
             _insert_gas(session, station, city, gas_fields)
             gas_inserted = 1
 
-        if has_meteo:
-            _insert_meteo(session, station, city, meteo_fields)
-            meteo_inserted = 1
 
         session.commit()
+        log.info(
+            "Ingest processed station=%s city=%s gas=%s meteo=%s",
+            station,
+            city,
+            gas_inserted,
+            meteo_inserted,
+        )
 
     return jsonify(
         {
@@ -77,6 +101,7 @@ def ingest(path_token: Optional[str] = None):
 def upsert_station_mapping(path_token: Optional[str] = None):
     auth_err = require_api_key(path_token)
     if auth_err:
+        log.warning("Unauthorized station-mapping attempt from %s", request.host)
         return auth_err
 
     data = get_payload()
@@ -85,6 +110,7 @@ def upsert_station_mapping(path_token: Optional[str] = None):
         data.get("station_code") or data.get("code")
     )
     if not new_code:
+        log.info("Missing station_code in station-mapping payload")
         return (
             jsonify(
                 {
@@ -100,6 +126,7 @@ def upsert_station_mapping(path_token: Optional[str] = None):
         key in data for key in ("city", "city_name", "city_id")
     )
     if city is None and city_was_provided:
+        log.info("Invalid city provided for station-mapping station=%s", new_code)
         return (
             jsonify(
                 {
@@ -121,6 +148,10 @@ def upsert_station_mapping(path_token: Optional[str] = None):
             ).scalar_one_or_none()
 
             if existing is None:
+                log.info(
+                    "Attempt to rename missing station mapping previous=%s",
+                    previous_code,
+                )
                 return (
                     jsonify(
                         {
@@ -135,6 +166,11 @@ def upsert_station_mapping(path_token: Optional[str] = None):
                 select(StationMapping).where(StationMapping.station_code == new_code)
             ).scalar_one_or_none()
             if duplicate and duplicate.id != existing.id:
+                log.info(
+                    "Duplicate station code detected new=%s previous=%s",
+                    new_code,
+                    previous_code,
+                )
                 return (
                     jsonify(
                         {
@@ -177,6 +213,12 @@ def upsert_station_mapping(path_token: Optional[str] = None):
                 operation = "created"
 
         session.commit()
+        log.info(
+            "Station mapping %s station=%s city=%s",
+            operation,
+            new_code,
+            city,
+        )
 
     return jsonify(
         {

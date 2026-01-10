@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional, Tuple
 
 from flask import current_app, jsonify, request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .config import Config, CITY_BY_CODE, CITY_BY_ID
@@ -78,6 +78,8 @@ def to_float(val: Any) -> Optional[float]:
         return None
     if num == -1.0:
         return None
+    elif num < 0:
+        return 0
     return num
 
 
@@ -135,7 +137,12 @@ def _lookup_city_by_station(
         return None
 
     db_city = session.execute(
-        select(StationMapping.city).where(StationMapping.station_code == code)
+        select(StationMapping.city).where(
+            or_(
+                StationMapping.station_code_gas == code,
+                StationMapping.station_code_meteo == code,
+            )
+        )
     ).scalar_one_or_none()
     if db_city:
         return db_city
@@ -166,25 +173,28 @@ def resolve_city(
 
     return None
 
+def transformation_data(data: Dict[str, Any]):
+    if data.get("tempinf"):
+        data["tempinf"] = (to_float(data["tempinf"]) - 32)*5/9
+
 
 def collect_gas_fields(data: Dict[str, Any]) -> Dict[str, Optional[float]]:
     return {
-        "CO_mg_m3": to_float(data.get("CO")),
-        "SO2_mg_m3": to_float(data.get("SO2")),
-        "NO2_mg_m3": to_float(data.get("NO2")),
-        "NO_mg_m3": to_float(data.get("NO")),
-        "H2S_mg_m3": to_float(data.get("H2S")),
-        "O3_mg_m3": to_float(data.get("O3")),
-        "NH3_mg_m3": to_float(data.get("NH3")),
-        "PM2_5_mg_m3": to_float(data.get("PM2.5")),
-        "PM10_mg_m3": to_float(data.get("PM10")),
+        "CO": to_float(data.get("CO")),
+        "SO2": to_float(data.get("SO2")),
+        "NO2": to_float(data.get("NO2")),
+        "NO": to_float(data.get("NO")),
+        "H2S": to_float(data.get("H2S")),
+        "O3": to_float(data.get("O3")),
+        "NH3": to_float(data.get("NH3")),
+        "PM2_5": to_float(data.get("PM2.5")),
+        "PM10": to_float(data.get("PM10")),
+        "R": to_float(data.get("R")),
     }
-
 
 def collect_meteo_fields(data: Dict[str, Any]) -> Dict[str, Optional[float]]:
     return {
-        "P_hpa": to_float(data.get("WD") or data.get("wd_deg")),
-        "TEMP_c": to_float(data.get("TEMP")),
-        "RH_pct": to_float(data.get("RH")),
-        "R_µsv": to_float(data.get("R")),
+        "P": to_float(data.get("WD") or data.get("wd_deg")),
+        "TEMP": to_float(data.get("tempinf")),
+        "RH": to_float(data.get("humidityin")),
     }

@@ -265,7 +265,7 @@ def upsert_station_mapping(path_token: Optional[str] = None):
 
 
 @bp.get("/cities")
-@bp.get("/ingest/<string:path_token>/cities")
+@bp.get("/cities/<string:path_token>")
 def list_cities(path_token: Optional[str] = None):
     auth_err = require_api_key(path_token)
     if auth_err:

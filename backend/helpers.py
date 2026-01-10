@@ -13,7 +13,7 @@ CITY_NAME_LOOKUP = {name.lower(): name for name in CITY_BY_ID.values()}
 
 def require_api_key(path_token: Optional[str] = None) -> Optional[Tuple[Any, int]]:
     provided = (
-        request.headers.get("X-API-Key") or request.args.get("api_key") or path_token
+        request.headers.get("X-API-Key") or request.args.get("api_key") or request.args.get("x-api-key") or path_token
     )
     if Config.API_KEY is None:
         return None

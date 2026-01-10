@@ -1,7 +1,7 @@
 from typing import Dict, Optional
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from backend.log import log
 
 from .config import CITY_BY_ID
@@ -29,8 +29,8 @@ def health() -> Dict[str, str]:
 
 @bp.post("/ingest")
 @bp.post("/ingest/<string:path_token>")
-@bp.post("/ingest/<string:path_token>/<string:mac>")
-def ingest(path_token: Optional[str] = None, mac: Optional[str] = None):
+@bp.post("/ingest/<string:path_token>/<string:city>")
+def ingest(path_token: Optional[str] = None, city: Optional[str] = None):
     log.info("Start ingest from %s", request.host)
     auth_err = require_api_key(path_token)
     if auth_err:
@@ -38,16 +38,16 @@ def ingest(path_token: Optional[str] = None, mac: Optional[str] = None):
         return auth_err
 
     data = get_payload()
+    city_from_path = city
+    if city_from_path and "city" not in data and "city_name" not in data:
+        data["city"] = city_from_path
     log.debug("Ingest payload: %s", data)
-    station = extract_station(data) or mac
-    if not station:
-        log.info("Missing station code in ingest payload")
-        return jsonify({"error": "missing_station_code"}), 400
-
-    station = normalize_station_code(station)
-    if not station:
-        log.info("Station code normalized to empty")
-        return jsonify({"error": "missing_station_code"}), 400
+    station = extract_station(data)
+    if station:
+        station = normalize_station_code(station)
+        if not station:
+            log.info("Station code normalized to empty")
+            return jsonify({"error": "missing_station_code"}), 400
 
     transformation_data(data)
 
@@ -58,45 +58,66 @@ def ingest(path_token: Optional[str] = None, mac: Optional[str] = None):
     has_meteo = any(v is not None for v in meteo_fields.values())
 
     with SessionLocal() as session:
-        mapping_exists = session.execute(
-            select(StationMapping.id).where(
-                or_(
-                    StationMapping.station_code_gas == station,
-                    StationMapping.station_code_meteo == station,
-                )
-            )
-        ).scalar_one_or_none()
-        if mapping_exists is None:
-            session.rollback()
-            log.info("Station mapping not found for station=%s", station)
-            return (
-                jsonify(
-                    {
-                        "error": "station_not_registered",
-                        "message": "Station code is absent from station_mappings; payload was ignored.",
-                    }
-                ),
-                404,
-            )
-
-        city = resolve_city(session, data, station)
+        city = city_from_path or resolve_city(session, data, station)
 
         gas_inserted = 0
         meteo_inserted = 0
+        meteo_station = None
 
         if has_gas:
+            if not station:
+                log.info("Missing station code for gas payload")
+                return jsonify({"error": "missing_station_code"}), 400
+            mapping_exists = session.execute(
+                select(StationMapping.id).where(
+                    StationMapping.station_code == station
+                )
+            ).scalar_one_or_none()
+            if mapping_exists is None:
+                session.rollback()
+                log.info("Station mapping not found for station=%s", station)
+                return (
+                    jsonify(
+                        {
+                            "error": "station_not_registered",
+                            "message": "Station code is absent from station_mappings; payload was ignored.",
+                        }
+                    ),
+                    404,
+                )
             log.debug("Inserting gas readings for station=%s city=%s", station, city)
             _insert_gas(session, station, city, gas_fields)
             gas_inserted = 1
 
         if has_meteo:
-            _insert_meteo(session, station, city, meteo_fields)
+            if not city:
+                log.info("Missing city for meteo payload")
+                return jsonify({"error": "missing_city"}), 400
+            meteo_station = session.execute(
+                select(StationMapping.station_code).where(
+                    StationMapping.city == city
+                )
+            ).scalar_one_or_none()
+            if meteo_station is None:
+                session.rollback()
+                log.info("Station mapping not found for city=%s", city)
+                return (
+                    jsonify(
+                        {
+                            "error": "station_not_registered",
+                            "message": "City is absent from station_mappings; payload was ignored.",
+                        }
+                    ),
+                    404,
+                )
+            _insert_meteo(session, meteo_station, city, meteo_fields)
             meteo_inserted = 1
 
         session.commit()
+        station_for_log = station or meteo_station
         log.info(
             "Ingest processed station=%s city=%s gas=%s meteo=%s",
-            station,
+            station_for_log,
             city,
             gas_inserted,
             meteo_inserted,
@@ -121,33 +142,8 @@ def upsert_station_mapping(path_token: Optional[str] = None):
 
     data = get_payload()
 
-    station_type = str(data.get("type") or "").strip().lower()
-
-    if not station_type:
-        log.info("Missing type in station-mapping payload")
-        return (
-            jsonify(
-                {
-                    "error": "missing_type",
-                    "message": "Provide 'type' (gas|meteo) in the request payload."
-                }
-            ),
-            400,
-        )
-    if station_type not in ("gas", "meteo"):
-        return (
-            jsonify(
-                {
-                    "error": "invalid_type",
-                    "message": "Type must be 'gas' or 'meteo'.",
-                }
-            ),
-            400,
-        )
-
-    station_code_key = "station_code_gas" if station_type == "gas" else "station_code_meteo"
     new_code = normalize_station_code(
-        data.get("station_code") or data.get(station_code_key)
+        data.get("station_code")
     )
     if not new_code:
         log.info("Missing station_code in station-mapping payload")
@@ -179,16 +175,11 @@ def upsert_station_mapping(path_token: Optional[str] = None):
 
     with SessionLocal() as session:
         operation = "created"
-        code_column = (
-            StationMapping.station_code_gas
-            if station_type == "gas"
-            else StationMapping.station_code_meteo
-        )
 
         existing = None
         if previous_code and previous_code != new_code:
             existing = session.execute(
-                select(StationMapping).where(code_column == previous_code)
+                select(StationMapping).where(StationMapping.station_code == previous_code)
             ).scalar_one_or_none()
             if existing is None:
                 log.info(
@@ -212,16 +203,15 @@ def upsert_station_mapping(path_token: Optional[str] = None):
 
         if existing is None:
             existing = session.execute(
-                select(StationMapping).where(code_column == new_code)
+                select(StationMapping).where(StationMapping.station_code == new_code)
             ).scalar_one_or_none()
 
         duplicate = session.execute(
-            select(StationMapping).where(code_column == new_code)
+            select(StationMapping).where(StationMapping.station_code == new_code)
         ).scalar_one_or_none()
         if duplicate and (existing is None or duplicate.id != existing.id):
             log.info(
-                "Duplicate station code detected type=%s new=%s",
-                station_type,
+                "Duplicate station code detected new=%s",
                 new_code,
             )
             return (
@@ -238,7 +228,7 @@ def upsert_station_mapping(path_token: Optional[str] = None):
             if city is None:
                 city = existing.city
             existing.city = city
-            setattr(existing, station_code_key, new_code)
+            existing.station_code = new_code
             if operation != "renamed":
                 operation = "updated"
         else:
@@ -252,8 +242,7 @@ def upsert_station_mapping(path_token: Optional[str] = None):
                     ),
                     400,
                 )
-            mapping = StationMapping(city=city)
-            setattr(mapping, station_code_key, new_code)
+            mapping = StationMapping(city=city, station_code=new_code)
             session.add(mapping)
             operation = "created"
 
@@ -269,7 +258,6 @@ def upsert_station_mapping(path_token: Optional[str] = None):
         {
             "status": "ok",
             "station_code": new_code,
-            "type": station_type,
             "city": city,
             "operation": operation,
         }

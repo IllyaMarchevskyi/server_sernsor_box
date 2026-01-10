@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional, Tuple
 
 from flask import current_app, jsonify, request
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Config, CITY_BY_CODE, CITY_BY_ID
@@ -137,12 +137,7 @@ def _lookup_city_by_station(
         return None
 
     db_city = session.execute(
-        select(StationMapping.city).where(
-            or_(
-                StationMapping.station_code_gas == code,
-                StationMapping.station_code_meteo == code,
-            )
-        )
+        select(StationMapping.city).where(StationMapping.station_code == code)
     ).scalar_one_or_none()
     if db_city:
         return db_city
@@ -173,28 +168,33 @@ def resolve_city(
 
     return None
 
+
 def transformation_data(data: Dict[str, Any]):
-    if data.get("tempinf"):
-        data["tempinf"] = (to_float(data["tempinf"]) - 32)*5/9
+    for key in data.keys():
+        if key == "tempinf":
+            data[key] = (to_float(data[key]) - 32) * 5 / 9
+            continue
+        data[key] = to_float(data[key])
 
 
 def collect_gas_fields(data: Dict[str, Any]) -> Dict[str, Optional[float]]:
     return {
-        "CO": to_float(data.get("CO")),
-        "SO2": to_float(data.get("SO2")),
-        "NO2": to_float(data.get("NO2")),
-        "NO": to_float(data.get("NO")),
-        "H2S": to_float(data.get("H2S")),
-        "O3": to_float(data.get("O3")),
-        "NH3": to_float(data.get("NH3")),
-        "PM2_5": to_float(data.get("PM2.5")),
-        "PM10": to_float(data.get("PM10")),
-        "R": to_float(data.get("R")),
+        "CO": data.get("CO"),
+        "SO2": data.get("SO2"),
+        "NO2": data.get("NO2"),
+        "NO": data.get("NO"),
+        "H2S": data.get("H2S"),
+        "O3": data.get("O3"),
+        "NH3": data.get("NH3"),
+        "PM2_5": data.get("PM2.5"),
+        "PM10": data.get("PM10"),
+        "R": data.get("R"),
     }
+
 
 def collect_meteo_fields(data: Dict[str, Any]) -> Dict[str, Optional[float]]:
     return {
-        "P": to_float(data.get("WD") or data.get("wd_deg")),
-        "TEMP": to_float(data.get("tempinf")),
-        "RH": to_float(data.get("humidityin")),
+        "P": data.get("WD") or data.get("wd_deg"),
+        "TEMP": data.get("tempinf"),
+        "RH": data.get("humidityin"),
     }

@@ -133,7 +133,7 @@ def ingest(path_token: Optional[str] = None, city: Optional[str] = None):
 
 
 @bp.post("/station-mappings")
-@bp.post("/ingest/<string:path_token>/station-mappings")
+@bp.post("/station-mappings/<string:path_token>")
 def upsert_station_mapping(path_token: Optional[str] = None):
     auth_err = require_api_key(path_token)
     if auth_err:

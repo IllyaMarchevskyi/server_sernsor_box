@@ -2,7 +2,7 @@ from flask import Flask
 
 from .config import Config, log_setup
 from .log import log
-from .db import init_db
+from .Database.db import init_db
 
 
 def create_app() -> Flask:

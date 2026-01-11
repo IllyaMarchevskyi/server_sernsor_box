@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-from .config import Config, build_mysql_url
+from ..config import Config, build_mysql_url, build_mysql_url_secondary
 
 
 Base = declarative_base()
@@ -38,11 +38,25 @@ def ensure_database_exists(db_url: str) -> None:
 
 
 RAW_DB_URL = Config.DATABASE_URL or build_mysql_url()
+RAW_DB_URL_SECONDARY = Config.DATABASE_URL2 or build_mysql_url_secondary()
 
 ensure_database_exists(RAW_DB_URL)
+if RAW_DB_URL_SECONDARY:
+    ensure_database_exists(RAW_DB_URL_SECONDARY)
 
 ENGINE = create_engine(RAW_DB_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=ENGINE, autoflush=False, autocommit=False, future=True)
+ENGINE_SECONDARY = (
+    create_engine(RAW_DB_URL_SECONDARY, pool_pre_ping=True, future=True)
+    if RAW_DB_URL_SECONDARY
+    else None
+)
+SessionLocalSecondary = (
+    sessionmaker(bind=ENGINE_SECONDARY, autoflush=False, autocommit=False, future=True)
+    if ENGINE_SECONDARY
+    else None
+)
+HAS_SECONDARY = ENGINE_SECONDARY is not None
 
 
 def init_db() -> None:
@@ -52,3 +66,5 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=ENGINE)
+    if ENGINE_SECONDARY is not None:
+        Base.metadata.create_all(bind=ENGINE_SECONDARY)

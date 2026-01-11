@@ -5,7 +5,7 @@ from sqlalchemy import select
 from backend.log import log
 
 from .config import CITY_BY_ID
-from .db import SessionLocal
+from .Database.db import HAS_SECONDARY, SessionLocal, SessionLocalSecondary
 from .helpers import (
     collect_gas_fields,
     collect_meteo_fields,
@@ -17,7 +17,7 @@ from .helpers import (
     resolve_city,
     transformation_data,
 )
-from .models import GasReading, MeteoReading, StationMapping
+from .Database.models import GasReading, MeteoReading, StationMapping
 
 bp = Blueprint("ingest", __name__)
 
@@ -58,70 +58,89 @@ def ingest(path_token: Optional[str] = None, city: Optional[str] = None):
     has_meteo = any(v is not None for v in meteo_fields.values())
 
     with SessionLocal() as session:
-        city = city_from_path or resolve_city(session, data, station)
+        secondary_session = SessionLocalSecondary() if HAS_SECONDARY else None
+        try:
+            city = city_from_path or resolve_city(session, data, station)
 
-        gas_inserted = 0
-        meteo_inserted = 0
-        meteo_station = None
+            gas_inserted = 0
+            meteo_inserted = 0
+            meteo_station = None
 
-        if has_gas:
-            if not station:
-                log.info("Missing station code for gas payload")
-                return jsonify({"error": "missing_station_code"}), 400
-            mapping_exists = session.execute(
-                select(StationMapping.id).where(
-                    StationMapping.station_code == station
+            if has_gas:
+                if not station:
+                    log.info("Missing station code for gas payload")
+                    return jsonify({"error": "missing_station_code"}), 400
+                mapping_exists = session.execute(
+                    select(StationMapping.id).where(
+                        StationMapping.station_code == station
+                    )
+                ).scalar_one_or_none()
+                if mapping_exists is None:
+                    session.rollback()
+                    log.info("Station mapping not found for station=%s", station)
+                    return (
+                        jsonify(
+                            {
+                                "error": "station_not_registered",
+                                "message": "Station code is absent from station_mappings; payload was ignored.",
+                            }
+                        ),
+                        404,
+                    )
+                log.debug(
+                    "Inserting gas readings for station=%s city=%s", station, city
                 )
-            ).scalar_one_or_none()
-            if mapping_exists is None:
-                session.rollback()
-                log.info("Station mapping not found for station=%s", station)
-                return (
-                    jsonify(
-                        {
-                            "error": "station_not_registered",
-                            "message": "Station code is absent from station_mappings; payload was ignored.",
-                        }
-                    ),
-                    404,
-                )
-            log.debug("Inserting gas readings for station=%s city=%s", station, city)
-            _insert_gas(session, station, city, gas_fields)
-            gas_inserted = 1
+                _insert_gas(session, station, city, gas_fields)
+                if secondary_session:
+                    _insert_gas(secondary_session, station, city, gas_fields)
+                gas_inserted = 1
 
-        if has_meteo:
-            if not city:
-                log.info("Missing city for meteo payload")
-                return jsonify({"error": "missing_city"}), 400
-            meteo_station = session.execute(
-                select(StationMapping.station_code).where(
-                    StationMapping.city == city
-                )
-            ).scalar_one_or_none()
-            if meteo_station is None:
-                session.rollback()
-                log.info("Station mapping not found for city=%s", city)
-                return (
-                    jsonify(
-                        {
-                            "error": "station_not_registered",
-                            "message": "City is absent from station_mappings; payload was ignored.",
-                        }
-                    ),
-                    404,
-                )
-            _insert_meteo(session, meteo_station, city, meteo_fields)
-            meteo_inserted = 1
+            if has_meteo:
+                if not city:
+                    log.info("Missing city for meteo payload")
+                    return jsonify({"error": "missing_city"}), 400
+                meteo_station = session.execute(
+                    select(StationMapping.station_code).where(
+                        StationMapping.city == city
+                    )
+                ).scalar_one_or_none()
+                if meteo_station is None:
+                    session.rollback()
+                    log.info("Station mapping not found for city=%s", city)
+                    return (
+                        jsonify(
+                            {
+                                "error": "station_not_registered",
+                                "message": "City is absent from station_mappings; payload was ignored.",
+                            }
+                        ),
+                        404,
+                    )
+                _insert_meteo(session, meteo_station, city, meteo_fields)
+                if secondary_session:
+                    _insert_meteo(secondary_session, meteo_station, city, meteo_fields)
+                meteo_inserted = 1
 
-        session.commit()
-        station_for_log = station or meteo_station
-        log.info(
-            "Ingest processed station=%s city=%s gas=%s meteo=%s",
-            station_for_log,
-            city,
-            gas_inserted,
-            meteo_inserted,
-        )
+            if secondary_session:
+                secondary_session.commit()
+            session.commit()
+            station_for_log = station or meteo_station
+            log.info(
+                "Ingest processed station=%s city=%s gas=%s meteo=%s",
+                station_for_log,
+                city,
+                gas_inserted,
+                meteo_inserted,
+            )
+        except Exception:
+            session.rollback()
+            if secondary_session:
+                secondary_session.rollback()
+            log.exception("Failed to write ingest data to databases")
+            return jsonify({"error": "db_write_failed"}), 500
+        finally:
+            if secondary_session:
+                secondary_session.close()
 
     return jsonify(
         {
@@ -142,9 +161,7 @@ def upsert_station_mapping(path_token: Optional[str] = None):
 
     data = get_payload()
 
-    new_code = normalize_station_code(
-        data.get("station_code")
-    )
+    new_code = normalize_station_code(data.get("station_code"))
     if not new_code:
         log.info("Missing station_code in station-mapping payload")
         return (
@@ -174,85 +191,112 @@ def upsert_station_mapping(path_token: Optional[str] = None):
     previous_code = normalize_station_code(data.get("previous_station_code"))
 
     with SessionLocal() as session:
-        operation = "created"
-
-        existing = None
-        if previous_code and previous_code != new_code:
-            existing = session.execute(
-                select(StationMapping).where(StationMapping.station_code == previous_code)
-            ).scalar_one_or_none()
-            if existing is None:
-                log.info(
-                    "Attempt to rename missing station mapping previous=%s",
-                    previous_code,
-                )
-                return (
-                    jsonify(
-                        {
-                            "error": "station_not_found",
-                            "message": f"No station mapping found for {previous_code}.",
-                        }
-                    ),
-                    404,
-                )
-            operation = "renamed"
-        elif city:
-            existing = session.execute(
-                select(StationMapping).where(StationMapping.city == city)
-            ).scalar_one_or_none()
-
-        if existing is None:
-            existing = session.execute(
-                select(StationMapping).where(StationMapping.station_code == new_code)
-            ).scalar_one_or_none()
-
-        duplicate = session.execute(
-            select(StationMapping).where(StationMapping.station_code == new_code)
-        ).scalar_one_or_none()
-        if duplicate and (existing is None or duplicate.id != existing.id):
-            log.info(
-                "Duplicate station code detected new=%s",
-                new_code,
-            )
-            return (
-                jsonify(
-                    {
-                        "error": "duplicate_station_code",
-                        "message": f"Station mapping for {new_code} already exists.",
-                    }
-                ),
-                409,
-            )
-
-        if existing:
-            if city is None:
-                city = existing.city
-            existing.city = city
-            existing.station_code = new_code
-            if operation != "renamed":
-                operation = "updated"
-        else:
-            if city is None:
-                return (
-                    jsonify(
-                        {
-                            "error": "missing_city",
-                            "message": "Provide city/city_name or city_id when creating a new mapping.",
-                        }
-                    ),
-                    400,
-                )
-            mapping = StationMapping(city=city, station_code=new_code)
-            session.add(mapping)
+        secondary_session = SessionLocalSecondary() if HAS_SECONDARY else None
+        try:
             operation = "created"
 
-        session.commit()
-        log.info(
-            "Station mapping %s station=%s city=%s",
-            operation,
-            new_code,
-            city,
-        )
+            existing = None
+            if previous_code and previous_code != new_code:
+                existing = session.execute(
+                    select(StationMapping).where(
+                        StationMapping.station_code == previous_code
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    log.info(
+                        "Attempt to rename missing station mapping previous=%s",
+                        previous_code,
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "error": "station_not_found",
+                                "message": f"No station mapping found for {previous_code}.",
+                            }
+                        ),
+                        404,
+                    )
+                operation = "renamed"
+            elif city:
+                existing = session.execute(
+                    select(StationMapping).where(StationMapping.city == city)
+                ).scalar_one_or_none()
+
+            if existing is None:
+                existing = session.execute(
+                    select(StationMapping).where(
+                        StationMapping.station_code == new_code
+                    )
+                ).scalar_one_or_none()
+
+            duplicate = session.execute(
+                select(StationMapping).where(StationMapping.station_code == new_code)
+            ).scalar_one_or_none()
+            if duplicate and (existing is None or duplicate.id != existing.id):
+                log.info(
+                    "Duplicate station code detected new=%s",
+                    new_code,
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": "duplicate_station_code",
+                            "message": f"Station mapping for {new_code} already exists.",
+                        }
+                    ),
+                    409,
+                )
+
+            if existing:
+                if city is None:
+                    city = existing.city
+                existing.city = city
+                old_code = existing.station_code
+                existing.station_code = new_code
+                if operation != "renamed":
+                    operation = "updated"
+                if secondary_session:
+                    prior_code = previous_code if operation == "renamed" else None
+                    if prior_code is None and old_code != new_code:
+                        prior_code = old_code
+                    _sync_station_mapping(secondary_session, existing, prior_code)
+            else:
+                if city is None:
+                    return (
+                        jsonify(
+                            {
+                                "error": "missing_city",
+                                "message": "Provide city/city_name or city_id when creating a new mapping.",
+                            }
+                        ),
+                        400,
+                    )
+                mapping = StationMapping(city=city, station_code=new_code)
+                session.add(mapping)
+                if secondary_session:
+                    secondary_session.add(
+                        StationMapping(city=city, station_code=new_code)
+                    )
+                operation = "created"
+
+            if secondary_session:
+                secondary_session.commit()
+            session.commit()
+            log.info(
+                "Station mapping %s station=%s city=%s",
+                operation,
+                new_code,
+                city,
+            )
+        except Exception:
+            session.rollback()
+            if secondary_session:
+                secondary_session.rollback()
+            log.exception("Failed to write station mapping to databases")
+            return jsonify({"error": "db_write_failed"}), 500
+        finally:
+            if secondary_session:
+                secondary_session.close()
 
     return jsonify(
         {
@@ -291,3 +335,17 @@ def _insert_meteo(
     payload = {k: v for k, v in fields.items() if v is not None}
     rec = MeteoReading(station_code=station, city=city, **payload)
     session.add(rec)
+
+
+def _sync_station_mapping(
+    session, source: StationMapping, previous_code: Optional[str] = None
+) -> None:
+    lookup_code = previous_code or source.station_code
+    existing = session.execute(
+        select(StationMapping).where(StationMapping.station_code == lookup_code)
+    ).scalar_one_or_none()
+    if existing:
+        existing.city = source.city
+        existing.station_code = source.station_code
+    else:
+        session.add(StationMapping(city=source.city, station_code=source.station_code))

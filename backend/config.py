@@ -44,17 +44,51 @@ class Config:
     DB_USER: str = os.getenv("DB_USER", "ecojob_test")
     DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
     DB_NAME: str = os.getenv("DB_NAME", "ecojob_test")
+    DATABASE_URL2: Optional[str] = os.getenv("DATABASE_URL2")
+    DB_HOST2: str = os.getenv("DB_HOST2", "")
+    DB_PORT2: int = int(os.getenv("DB_PORT2", "3306"))
+    DB_USER2: str = os.getenv("DB_USER2", "")
+    DB_PASSWORD2: str = os.getenv("DB_PASSWORD2", "")
+    DB_NAME2: str = os.getenv("DB_NAME2", "")
     API_KEY: Optional[str] = os.getenv("INGEST_API_KEY")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+
+def build_mysql_url_from_parts(
+    db_user: str,
+    db_password: str,
+    db_host: str,
+    db_port: int,
+    db_name: str,
+) -> str:
+    return (
+        "mysql+mysqlconnector://"
+        f"{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+        "?charset=utf8mb4"
+    )
 
 
 def build_mysql_url(config: Config = Config) -> str:
     """Construct a SQLAlchemy MySQL connector URL from Config values."""
 
-    return (
-        "mysql+mysqlconnector://"
-        f"{config.DB_USER}:{config.DB_PASSWORD}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}"
-        "?charset=utf8mb4"
+    return build_mysql_url_from_parts(
+        config.DB_USER,
+        config.DB_PASSWORD,
+        config.DB_HOST,
+        config.DB_PORT,
+        config.DB_NAME,
+    )
+
+
+def build_mysql_url_secondary(config: Config = Config) -> Optional[str]:
+    if not (config.DB_HOST2 and config.DB_USER2 and config.DB_NAME2):
+        return None
+    return build_mysql_url_from_parts(
+        config.DB_USER2,
+        config.DB_PASSWORD2,
+        config.DB_HOST2,
+        config.DB_PORT2,
+        config.DB_NAME2,
     )
 
 

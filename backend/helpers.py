@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Config, CITY_BY_CODE, CITY_BY_ID
-from .models import StationMapping
+from .Database.models import StationMapping
 
 
 CITY_NAME_LOOKUP = {name.lower(): name for name in CITY_BY_ID.values()}
